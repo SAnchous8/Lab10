@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 
@@ -81,13 +81,54 @@ namespace Компилятор
         private const byte _errMax = 9;
 
         private static char _ch;
-        private static TextPosition _positionNow = new TextPosition();
-        private static string _line = "";
-        private static byte _lastInLine = 0;
-        private static List<Err> _err = new List<Err>();
+        private static TextPosition _positionNow;
+        private static string _line;
+        private static byte _lastInLine;
+        private static List<Err> _err;
         private static StreamReader _file;
-        private static uint _errCount = 0;
-        private static bool _endOfFile = false;
+        private static uint _errCount;
+        private static bool _endOfFile;
+        private static Dictionary<byte, string> _errorTable;
+
+        private static Dictionary<uint, List<Err>> _errorsByLine;
+
+        static InputOutput()
+        {
+            _ch = '\0';
+            _positionNow = new TextPosition(0, 0);
+            _line = "";
+            _lastInLine = 0;
+            _err = new List<Err>();
+            _file = null;
+            _errCount = 0;
+            _endOfFile = false;
+            _errorsByLine = new Dictionary<uint, List<Err>>();
+
+            _errorTable = new Dictionary<byte, string>()
+            {
+                { 1, "ошибка ввода-вывода" },
+                { 2, "слишком много ошибок в строке" },
+                { 50, "неверный символ в программе" },
+                { 51, "пропущен идентификатор" },
+                { 52, "пропущена точка с запятой" },
+                { 53, "пропущена точка" },
+                { 54, "пропущено двоеточие" },
+                { 55, "пропущена запятая" },
+                { 56, "пропущена левая скобка" },
+                { 57, "пропущена правая скобка" },
+                { 58, "пропущен оператор присваивания :=" },
+                { 100, "использование имени не соответствует описанию" },
+                { 101, "ожидалось ключевое слово begin" },
+                { 102, "ожидалось ключевое слово end" },
+                { 103, "пропущено ключевое слово program" },
+                { 147, "тип метки не совпадает с типом выбирающего выражения" },
+                { 200, "целочисленная константа вне диапазона" },
+                { 201, "вещественная константа вне диапазона" },
+                { 202, "недопустимый символ в строке" },
+                { 203, "константа превышает допустимый предел" },
+                { 250, "неожиданный конец файла" }
+            };
+        }
 
         public static char Ch
         {
@@ -121,33 +162,17 @@ namespace Компилятор
             }
         }
 
-        public static Dictionary<byte, string> ErrorTable = new Dictionary<byte, string>()
+        public static Dictionary<byte, string> ErrorTable
         {
-            { 1, "Ошибка ввода-вывода" },
-            { 2, "Слишком много ошибок в строке" },
-            { 50, "Неверный символ в программе" },
-            { 51, "Пропущен идентификатор" },
-            { 52, "Пропущена точка с запятой" },
-            { 53, "Пропущена точка" },
-            { 54, "Пропущено двоеточие" },
-            { 55, "Пропущена запятая" },
-            { 56, "Пропущена левая скобка" },
-            { 57, "Пропущена правая скобка" },
-            { 58, "Пропущен оператор присваивания :=" },
-            { 100, "Неизвестный идентификатор" },
-            { 101, "Ожидалось ключевое слово begin" },
-            { 102, "Ожидалось ключевое слово end" },
-            { 103, "Пропущено ключевое слово program" },
-            { 200, "Целочисленная константа вне диапазона" },
-            { 201, "Вещественная константа вне диапазона" },
-            { 202, "Недопустимый символ в строке" },
-            { 203, "Константа превышает допустимый предел" },
-            { 250, "Неожиданный конец файла" }
-        };
+            get
+            {
+                return _errorTable;
+            }
+        }
 
         public static void OpenFile(string filePath)
         {
-            if (!System.IO.File.Exists(filePath))
+            if (!File.Exists(filePath))
             {
                 Console.WriteLine("Ошибка: файл " + filePath + " не найден!");
                 return;
@@ -157,6 +182,7 @@ namespace Компилятор
             _errCount = 0;
             _endOfFile = false;
             _positionNow = new TextPosition(1, 0);
+            _errorsByLine = new Dictionary<uint, List<Err>>();
 
             ReadNextLine();
 
@@ -194,10 +220,7 @@ namespace Компилятор
             {
                 ListThisLine();
 
-                if (_err.Count > 0)
-                {
-                    ListErrors();
-                }
+                ListErrorsForLine(_positionNow.LineNumber);
 
                 ReadNextLine();
 
@@ -230,7 +253,14 @@ namespace Компилятор
         {
             if (_line != null)
             {
-                Console.WriteLine(_line);
+                string lineNumber = _positionNow.LineNumber.ToString();
+
+                while (lineNumber.Length < 4)
+                {
+                    lineNumber = " " + lineNumber;
+                }
+
+                Console.WriteLine(lineNumber + " " + _line);
             }
         }
 
@@ -249,8 +279,6 @@ namespace Компилятор
                 {
                     _lastInLine = _line.Length > 0 ? (byte)(_line.Length - 1) : (byte)0;
                 }
-
-                _err = new List<Err>();
             }
             else
             {
@@ -262,7 +290,8 @@ namespace Компилятор
 
         static void End()
         {
-            Console.WriteLine("Компиляция завершена: ошибок — " + _errCount + "!");
+            Console.WriteLine();
+            Console.WriteLine("Компиляция окончена: ошибок - " + _errCount + " !");
             _endOfFile = true;
             _ch = '\0';
 
@@ -273,45 +302,62 @@ namespace Компилятор
             }
         }
 
-        static void ListErrors()
+        private static void ListErrorsForLine(uint lineNumber)
         {
-            int pos = 6 - $"{_positionNow.LineNumber} ".Length;
-            string s = "";
+            if (!_errorsByLine.ContainsKey(lineNumber))
+            {
+                return;
+            }
 
-            foreach (Err item in _err)
+            List<Err> errorsForLine = _errorsByLine[lineNumber];
+
+            foreach (Err item in errorsForLine)
             {
                 _errCount = _errCount + 1;
-                s = "**";
+
+                string errorLine = "**";
 
                 if (_errCount < 10)
                 {
-                    s = s + "0";
+                    errorLine = errorLine + "0";
                 }
 
-                s = s + _errCount + "**";
+                errorLine = errorLine + _errCount + "**";
 
-                while (s.Length - 1 < pos + item.ErrorPosition.CharNumber)
+                int spacesCount = 4 + 1 + (int)item.ErrorPosition.CharNumber;
+
+                while (errorLine.Length < spacesCount)
                 {
-                    s = s + " ";
+                    errorLine = errorLine + " ";
                 }
 
-                s = s + "^ ошибка код " + item.ErrorCode;
+                errorLine = errorLine + "^ ошибка код " + item.ErrorCode;
+                Console.WriteLine(errorLine);
 
-                if (ErrorTable.ContainsKey(item.ErrorCode))
+                string descLine = "****** ";
+
+                if (_errorTable.ContainsKey(item.ErrorCode))
                 {
-                    s = s + " (" + ErrorTable[item.ErrorCode] + ")";
+                    descLine = descLine + _errorTable[item.ErrorCode];
                 }
 
-                Console.WriteLine(s);
+                Console.WriteLine(descLine);
             }
         }
 
         public static void Error(byte errorCode, TextPosition position)
         {
-            if (_err.Count <= _errMax)
+            uint lineNum = position.LineNumber;
+
+            if (!_errorsByLine.ContainsKey(lineNum))
+            {
+                _errorsByLine[lineNum] = new List<Err>();
+            }
+
+            if (_errorsByLine[lineNum].Count <= _errMax)
             {
                 Err e = new Err(position, errorCode);
-                _err.Add(e);
+                _errorsByLine[lineNum].Add(e);
             }
         }
 
@@ -321,7 +367,7 @@ namespace Компилятор
             Console.WriteLine("Код | Описание");
             Console.WriteLine("----+---------");
 
-            foreach (var item in ErrorTable)
+            foreach (var item in _errorTable)
             {
                 Console.WriteLine(item.Key.ToString().PadLeft(3) + " | " + item.Value);
             }
